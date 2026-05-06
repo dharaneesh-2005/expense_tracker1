@@ -125,35 +125,172 @@ app.get('/reports/:period', async (req, res) => {
 
 app.post('/ocr', upload.single('image'), async (req, res) => {
   try {
-    const imageBuffer = fs.readFileSync(req.file.path);
-    const base64Image = imageBuffer.toString('base64');
-    
-    const completion = await groq.chat.completions.create({
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: OCR_PROMPT },
-            {
-              type: 'image_url',
-              image_url: { url: `data:image/jpeg;base64,${base64Image}` }
-            }
-          ]
-        }
-      ],
-      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
-      temperature: 0.1,
-      max_tokens: 500
+    if (!req.file) {
+      return res.status(400).json({
+        error: 'No image uploaded'
+      });
+    }
+
+    const imageBuffer =
+      fs.readFileSync(req.file.path);
+
+    const base64Image =
+      imageBuffer.toString('base64');
+
+    const mimeType =
+      req.file.mimetype;
+
+    const completion =
+      await groq.chat.completions.create({
+        model:
+          'meta-llama/llama-4-scout-17b-16e-instruct',
+
+        temperature: 0.1,
+
+        max_tokens: 500,
+
+        response_format: {
+          type: 'json_object'
+        },
+
+        messages: [
+          {
+            role: 'system',
+            content: `
+You are an OCR financial extraction system.
+
+Extract expense details from receipt images.
+
+Return ONLY valid JSON.
+
+Allowed categories:
+- Food
+- Transport
+- Shopping
+- Entertainment
+- Healthcare
+- Bills
+- Education
+- Other
+
+Category normalization examples:
+- Swiggy, Zomato, Restaurant → Food
+- Uber, Ola, Petrol → Transport
+- Netflix, Spotify → Entertainment
+- Amazon, Flipkart → Shopping
+- Hospital, Pharmacy → Healthcare
+
+Rules:
+- amount must be numeric
+- date format must be YYYY-MM-DD
+- category must match ONLY allowed categories
+- if uncertain use "Other"
+
+Return format:
+{
+  "amount": 0,
+  "category": "",
+  "date": ""
+}
+`
+          },
+
+          {
+            role: 'user',
+
+            content: [
+              {
+                type: 'text',
+
+                text:
+                  'Extract expense details from this receipt image'
+              },
+
+              {
+                type: 'image_url',
+
+                image_url: {
+                  url:
+                    `data:${mimeType};base64,${base64Image}`
+                }
+              }
+            ]
+          }
+        ]
+      });
+
+    const raw =
+      completion.choices[0]
+        .message.content;
+
+    console.log('Scout Output:', raw);
+
+    let parsed;
+
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return res.status(500).json({
+        error:
+          'Scout returned invalid JSON',
+        raw
+      });
+    }
+
+    // Handle array response - insert all items
+    if (!Array.isArray(parsed)) {
+      parsed = [parsed];
+    }
+
+    if (parsed.length === 0) {
+      return res.status(400).json({
+        error: 'No expenses found in image'
+      });
+    }
+
+    const inserted = [];
+    for (const expense of parsed) {
+      const amount = parseFloat(expense.amount);
+      const category = expense.category || 'Other';
+      const dateStr = expense.date || new Date().toISOString().split('T')[0];
+
+      if (!amount || isNaN(amount)) {
+        continue;
+      }
+
+      const result = await pool.query(
+        'INSERT INTO expenses (amount, category, date) VALUES ($1, $2, $3) RETURNING *',
+        [amount, category, dateStr]
+      );
+      inserted.push(result.rows[0]);
+    }
+
+    if (req.file?.path) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch {}
+    }
+
+    res.json({
+      success: true,
+      count: inserted.length,
+      saved: inserted
     });
 
-    const response = completion.choices[0].message.content;
-    const jsonMatch = response.match(/\{[\s\S]*\}/);
-    const extracted = JSON.parse(jsonMatch ? jsonMatch[0] : response);
-
-    res.json(extracted);
   } catch (error) {
-    if (req.file) fs.unlinkSync(req.file.path);
-    res.status(500).json({ error: error.message });
+    console.log(error);
+
+    if (req.file?.path) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch {}
+    }
+
+    res.status(500).json({
+      error:
+        'Failed to extract data from image',
+      details: error.message
+    });
   }
 });
 

@@ -100,11 +100,15 @@ function App() {
       });
       const data = await res.json();
       
-      setAmount(data.amount.toString());
-      setCategory(data.category);
-      setDate(data.date);
+      if (data.success) {
+        alert(`Successfully added ${data.count} expense(s) from receipt!`);
+        fetchExpenses();
+        fetchReport(period);
+      } else {
+        alert(data.error || 'Failed to extract data from image');
+      }
     } catch (error) {
-      alert('Failed to extract data from image');
+      alert('Failed to process image');
     }
     setOcrLoading(false);
     e.target.value = '';
@@ -117,7 +121,7 @@ function App() {
       <form onSubmit={addExpense} style={{ marginBottom: '30px', padding: '20px', border: '1px solid #ddd' }}>
         <div style={{ marginBottom: '15px' }}>
           <label style={{ padding: '8px 20px', background: '#666', color: '#fff', cursor: 'pointer', borderRadius: '3px', display: 'inline-block' }}>
-            {ocrLoading ? 'Processing...' : '📷 Upload Receipt'}
+            {ocrLoading ? 'Processing...' : '📷 Upload Receipt (Auto-add)'}
             <input type="file" accept="image/*" onChange={handleImageUpload} style={{ display: 'none' }} disabled={ocrLoading} />
           </label>
           <span style={{ marginLeft: '10px', fontSize: '14px', color: '#666' }}>or enter manually below</span>
